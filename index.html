@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>パリティビット エラー検出 デモ</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+.bit-btn{transition:all 0.2s;cursor:pointer;user-select:none;}
+.bit-btn:hover{transform:scale(1.1);}
+.bit-flip{animation:flip 0.4s ease-in-out;}
+@keyframes flip{0%{transform:rotateY(0)}50%{transform:rotateY(90deg)}100%{transform:rotateY(0)}}
+.parity-bit{opacity:0.7;cursor:default;}
+</style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+<div class="max-w-4xl mx-auto px-4 py-8">
+  <h1 class="text-3xl font-bold text-green-400 mb-2 font-mono">パリティビット エラー検出 デモ</h1>
+  <p class="text-gray-400 mb-6">バイト列のパリティビット計算・エラー注入→検出を対話的に体験します</p>
+
+  <!-- モード選択 -->
+  <div class="bg-gray-800 rounded-xl p-5 mb-6">
+    <div class="flex flex-wrap gap-4 items-center mb-4">
+      <div>
+        <span class="text-sm text-gray-400 mr-2">パリティ方式:</span>
+        <label class="mr-3 cursor-pointer"><input type="radio" name="parity-type" value="even" checked class="mr-1">偶数パリティ (Even)</label>
+        <label class="cursor-pointer"><input type="radio" name="parity-type" value="odd" class="mr-1">奇数パリティ (Odd)</label>
+      </div>
+      <div>
+        <span class="text-sm text-gray-400 mr-2">バイト数:</span>
+        <select id="byte-count" class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" aria-label="バイト数">
+          <option value="1">1バイト</option>
+          <option value="2" selected>2バイト</option>
+          <option value="3">3バイト</option>
+          <option value="4">4バイト</option>
+        </select>
+      </div>
+      <button id="random-data" class="bg-indigo-600 hover:bg-indigo-700 px-3 py-1 rounded text-sm">🎲 ランダム生成</button>
+      <button id="reset-bits" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">↺ リセット</button>
+    </div>
+
+    <!-- ビット入力 -->
+    <div class="mb-4">
+      <div class="text-xs text-gray-400 mb-2">データビット（クリックでビット反転）</div>
+      <div id="data-bytes" class="flex flex-wrap gap-4"></div>
+    </div>
+
+    <!-- テキスト入力 -->
+    <div class="flex items-center gap-3 mb-2">
+      <label class="text-sm text-gray-400">ASCII入力:</label>
+      <input type="text" id="text-input" maxlength="4" class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm w-24 font-mono text-green-300" placeholder="AB" aria-label="ASCII文字入力">
+      <button id="from-text" class="bg-gray-600 hover:bg-gray-500 px-3 py-1 rounded text-sm">変換</button>
+    </div>
+  </div>
+
+  <!-- パリティ計算結果 -->
+  <div class="bg-gray-800 rounded-xl p-5 mb-6">
+    <h2 class="font-semibold text-green-400 mb-4 font-mono">パリティビット 計算結果</h2>
+    <div id="parity-results" class="space-y-3"></div>
+  </div>
+
+  <!-- エラー注入 -->
+  <div class="bg-gray-800 rounded-xl p-5 mb-6">
+    <h2 class="font-semibold text-yellow-400 mb-3 font-mono">⚡ エラー注入</h2>
+    <p class="text-xs text-gray-400 mb-3">送信中にビットが反転する状況をシミュレートします。反転させたいビットをクリックしてください。</p>
+    <div id="transmitted-bytes" class="flex flex-wrap gap-4 mb-4"></div>
+    <div id="error-status" class="text-sm"></div>
+  </div>
+
+  <!-- 検出結果 -->
+  <div class="bg-gray-800 rounded-xl p-5 mb-6">
+    <h2 class="font-semibold mb-3 font-mono" id="detect-title">🔍 検出結果</h2>
+    <div id="detect-results" class="space-y-3"></div>
+  </div>
+
+  <!-- 解説 -->
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold text-blue-400 mb-3">📚 パリティビットとは</h2>
+    <div class="text-sm text-gray-300 space-y-2">
+      <p><span class="text-green-400 font-semibold">偶数パリティ:</span> データビット中の「1」の個数が偶数になるようにパリティビットを付加します。</p>
+      <p><span class="text-yellow-400 font-semibold">奇数パリティ:</span> データビット中の「1」の個数が奇数になるようにパリティビットを付加します。</p>
+      <p><span class="text-red-400 font-semibold">限界:</span> パリティビットは1ビットのエラーを検出できますが、<span class="text-red-300">2ビット同時エラーは検出できません</span>（パリティが偶然一致するため）。</p>
+      <p><span class="text-blue-400 font-semibold">用途:</span> シリアル通信・メモリ（ECC RAM）・RAID-5など、信頼性が重要なシステムで広く使用されています。</p>
+    </div>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY='parity-v1';
+let dataBits=[];
+let transmittedBits=[];
+let numBytes=2;
+let parityType='even';
+let errorPositions=new Set();
+
+function getParityType(){return document.querySelector('input[name="parity-type"]:checked').value;}
+
+function calcParity(bits,type){
+  const ones=bits.filter(b=>b===1).length;
+  if(type==='even')return ones%2===0?0:1;
+  else return ones%2===1?0:1;
+}
+
+function initBits(n){
+  numBytes=n;
+  dataBits=Array.from({length:n*8},(_,i)=>Math.random()<0.5?0:1);
+  errorPositions.clear();
+  transmittedBits=[...dataBits];
+  render();
+}
+
+function renderByteGroup(bits, container, clickable, highlightPositions){
+  container.innerHTML='';
+  const n=bits.length/8;
+  for(let b=0;b<n;b++){
+    const byteDiv=document.createElement('div');
+    byteDiv.className='flex flex-col items-center gap-1';
+
+    const label=document.createElement('div');
+    label.className='text-xs text-gray-500 font-mono';
+    const byteVal=bits.slice(b*8,(b+1)*8).reduce((acc,bit,i)=>acc+(bit<<(7-i)),0);
+    label.textContent=`Byte${b+1}: 0x${byteVal.toString(16).toUpperCase().padStart(2,'0')} (${byteVal})`;
+    byteDiv.appendChild(label);
+
+    const bitsRow=document.createElement('div');
+    bitsRow.className='flex gap-1';
+    for(let i=0;i<8;i++){
+      const idx=b*8+i;
+      const bit=bits[idx];
+      const btn=document.createElement('button');
+      btn.className=`bit-btn w-9 h-9 rounded font-mono font-bold text-sm border-2 ${bit===1?'bg-green-600 border-green-400 text-white':'bg-gray-700 border-gray-600 text-gray-300'}`;
+      if(highlightPositions&&highlightPositions.has(idx)){
+        btn.classList.add('border-red-400','bg-red-800','text-red-200');
+      }
+      btn.textContent=bit;
+      btn.setAttribute('aria-label',`ビット${idx}の値${bit}、クリックで反転`);
+      btn.dataset.idx=idx;
+      if(clickable){
+        btn.addEventListener('click',()=>toggleBit(idx,btn));
+      }else{
+        btn.classList.add('cursor-default');
+      }
+      bitsRow.appendChild(btn);
+    }
+    byteDiv.appendChild(bitsRow);
+
+    // パリティビット表示
+    const parityRow=document.createElement('div');
+    parityRow.className='flex items-center gap-1 text-xs text-gray-400';
+    const pBit=calcParity(bits.slice(b*8,(b+1)*8),getParityType());
+    parityRow.innerHTML=`<span>P:</span><span class="w-9 h-6 flex items-center justify-center rounded font-mono font-bold ${pBit===1?'bg-yellow-600 text-yellow-100':'bg-gray-600 text-gray-300'}">${pBit}</span>`;
+    byteDiv.appendChild(parityRow);
+
+    container.appendChild(byteDiv);
+  }
+}
+
+function toggleBit(idx,btn){
+  dataBits[idx]=dataBits[idx]===1?0:1;
+  errorPositions.clear();
+  transmittedBits=[...dataBits];
+  btn.classList.add('bit-flip');
+  setTimeout(()=>btn.classList.remove('bit-flip'),400);
+  render();
+}
+
+function toggleErrorBit(idx){
+  if(errorPositions.has(idx))errorPositions.delete(idx);
+  else errorPositions.add(idx);
+  transmittedBits=[...dataBits];
+  errorPositions.forEach(pos=>{transmittedBits[pos]=transmittedBits[pos]===1?0:1;});
+  renderTransmitted();
+  detectErrors();
+}
+
+function render(){
+  const container=document.getElementById('data-bytes');
+  renderByteGroup(dataBits,container,true,null);
+
+  renderParityResults();
+  renderTransmitted();
+  detectErrors();
+
+  // 保存
+  localStorage.setItem(STORAGE_KEY,JSON.stringify({dataBits,numBytes,parityType}));
+}
+
+function renderParityResults(){
+  const el=document.getElementById('parity-results');
+  const type=getParityType();
+  el.innerHTML=Array.from({length:numBytes},(_, b)=>{
+    const byteBits=dataBits.slice(b*8,(b+1)*8);
+    const pBit=calcParity(byteBits,type);
+    const ones=byteBits.filter(x=>x===1).length;
+    const transmitted=[...byteBits,pBit];
+    return`<div class="flex items-center flex-wrap gap-3 text-sm font-mono">
+      <span class="text-gray-400">Byte${b+1}:</span>
+      <span class="text-green-300">[${byteBits.join('')}]</span>
+      <span class="text-gray-500">+ P=</span>
+      <span class="text-yellow-300 font-bold">${pBit}</span>
+      <span class="text-gray-500">→ 送信:</span>
+      <span class="text-blue-300">[${transmitted.join('')}]</span>
+      <span class="text-xs text-gray-500">(1の個数: ${ones} → ${ones+pBit}個・${(ones+pBit)%2===0?'偶数':'奇数'})</span>
+    </div>`;
+  }).join('');
+}
+
+function renderTransmitted(){
+  const container=document.getElementById('transmitted-bytes');
+  container.innerHTML='';
+  const n=transmittedBits.length/8;
+  for(let b=0;b<n;b++){
+    const byteDiv=document.createElement('div');
+    byteDiv.className='flex flex-col items-center gap-1';
+    const label=document.createElement('div');
+    label.className='text-xs text-gray-500 font-mono';
+    label.textContent=`Byte${b+1} 受信`;
+    byteDiv.appendChild(label);
+    const bitsRow=document.createElement('div');
+    bitsRow.className='flex gap-1';
+    for(let i=0;i<8;i++){
+      const idx=b*8+i;
+      const bit=transmittedBits[idx];
+      const isError=errorPositions.has(idx);
+      const btn=document.createElement('button');
+      btn.className=`bit-btn w-9 h-9 rounded font-mono font-bold text-sm border-2 ${isError?'bg-red-700 border-red-400 text-white animate-pulse':bit===1?'bg-green-600 border-green-400 text-white':'bg-gray-700 border-gray-600 text-gray-300'}`;
+      btn.textContent=bit;
+      btn.setAttribute('aria-label',`ビット${idx}（${isError?'エラー注入中':'正常'}）クリックでエラー注入`);
+      btn.dataset.idx=idx;
+      btn.addEventListener('click',()=>toggleErrorBit(idx));
+      bitsRow.appendChild(btn);
+    }
+    byteDiv.appendChild(bitsRow);
+    container.appendChild(byteDiv);
+  }
+
+  const statusEl=document.getElementById('error-status');
+  if(errorPositions.size===0){statusEl.innerHTML='<span class="text-green-400">エラーなし（正常送信）</span>';}
+  else{statusEl.innerHTML=`<span class="text-red-400">⚡ ${errorPositions.size}ビットのエラーを注入中 (位置: ${[...errorPositions].sort((a,b)=>a-b).join(', ')})</span>`;}
+}
+
+function detectErrors(){
+  const type=getParityType();
+  const resultsEl=document.getElementById('detect-results');
+  const titleEl=document.getElementById('detect-title');
+  let allOk=true;
+  const html=Array.from({length:numBytes},(_,b)=>{
+    const byteBits=transmittedBits.slice(b*8,(b+1)*8);
+    const originalParity=calcParity(dataBits.slice(b*8,(b+1)*8),type);
+    const receivedParity=calcParity(byteBits,type);
+    const errorInByte=[...errorPositions].filter(p=>p>=b*8&&p<(b+1)*8).length;
+    const parityMatch=originalParity===receivedParity;
+    const detected=!parityMatch;
+
+    if(errorInByte>0||!parityMatch)allOk=false;
+
+    let status,bgClass,icon;
+    if(errorInByte===0&&parityMatch){status='✅ 正常';bgClass='border-green-700 bg-green-900';icon='text-green-400';}
+    else if(detected){status='🚨 エラー検出！';bgClass='border-red-700 bg-red-900';icon='text-red-400';}
+    else{status='⚠️ エラー未検出（2ビットエラー等）';bgClass='border-yellow-700 bg-yellow-900';icon='text-yellow-400';}
+
+    const ones=byteBits.filter(x=>x===1).length;
+    return`<div class="border rounded-lg p-3 ${bgClass}">
+      <div class="flex items-center gap-3 mb-1">
+        <span class="text-sm font-mono text-gray-400">Byte${b+1}:</span>
+        <span class="font-bold ${icon}">${status}</span>
+      </div>
+      <div class="text-xs font-mono text-gray-300">
+        受信ビット: [${byteBits.join('')}] — 1の個数: ${ones}個 (${ones%2===0?'偶数':'奇数'})
+        | 期待パリティ: ${originalParity} | 受信パリティ(計算): ${receivedParity}
+        ${errorInByte>0?`<br><span class="text-red-300">実際のエラー: ${errorInByte}ビット反転</span>`:''}
+        ${errorInByte>0&&!detected?`<br><span class="text-yellow-300">⚠️ 2ビットエラーのためパリティが偶然一致 → 検出不能</span>`:''}
+      </div>
+    </div>`;
+  }).join('');
+
+  resultsEl.innerHTML=html;
+  titleEl.innerHTML=allOk?'🔍 検出結果 <span class="text-green-400">（エラーなし）</span>':
+    errorPositions.size>0?'🔍 検出結果':'🔍 検出結果';
+}
+
+document.querySelectorAll('input[name="parity-type"]').forEach(r=>r.addEventListener('change',()=>{parityType=getParityType();render();}));
+document.getElementById('byte-count').addEventListener('change',e=>{initBits(+e.target.value);});
+document.getElementById('random-data').addEventListener('click',()=>{initBits(numBytes);});
+document.getElementById('reset-bits').addEventListener('click',()=>{
+  dataBits=new Array(numBytes*8).fill(0);
+  errorPositions.clear();transmittedBits=[...dataBits];render();
+});
+document.getElementById('from-text').addEventListener('click',()=>{
+  const text=document.getElementById('text-input').value;
+  if(!text)return;
+  const bytes=Math.min(numBytes,text.length);
+  for(let b=0;b<bytes;b++){
+    const code=text.charCodeAt(b);
+    for(let i=0;i<8;i++)dataBits[b*8+i]=(code>>(7-i))&1;
+  }
+  errorPositions.clear();transmittedBits=[...dataBits];render();
+});
+
+// 初期化
+const saved=localStorage.getItem(STORAGE_KEY);
+if(saved){const p=JSON.parse(saved);numBytes=p.numBytes||2;dataBits=p.dataBits||[];document.getElementById('byte-count').value=numBytes;}
+if(dataBits.length!==numBytes*8)initBits(numBytes);
+else{transmittedBits=[...dataBits];render();}
+</script>
+</body>
+</html>
